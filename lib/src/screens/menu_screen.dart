@@ -83,7 +83,7 @@ class MenuScreen extends StatelessWidget {
               alignment: Alignment.bottomCenter,
               child: Container(
                 height: 48,
-                color: Colors.green.shade900.withOpacity(0.3),
+                color: Colors.green.shade900.withValues(alpha: 0.3),
                 alignment: Alignment.center,
                 child: const Text('[ BANNER AD PLACEHOLDER ]', style: TextStyle(color: Colors.white70, fontSize: 12)),
               ),
