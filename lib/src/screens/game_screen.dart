@@ -1,6 +1,5 @@
 import 'package:flame/game.dart';
 import 'package:flutter/material.dart';
-import 'dart:ui' show FontFeature; // for tabular figures
 import '../game/pong_game.dart';
 import '../game/difficulty.dart';
 import '../app.dart';

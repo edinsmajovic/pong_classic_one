@@ -47,43 +47,43 @@ class PongGame extends FlameGame with HasCollisionDetection {
   }
 
   @override
-  void onGameResize(Vector2 newSize) {
-    super.onGameResize(newSize);
+  void onGameResize(Vector2 size) {
+    super.onGameResize(size);
     // First-time initialization when we receive a valid size
-    if (!_initialized && newSize.x > 0 && newSize.y > 0) {
+    if (!_initialized && size.x > 0 && size.y > 0) {
       playerPaddle = Paddle(
         isPlayer: true,
         heightFactor: difficultyConfig.paddleHeightFactor,
         color: _whitePaint,
       )..anchor = Anchor.center
-       ..position = Vector2(_paddleXMargin, newSize.y / 2);
+       ..position = Vector2(_paddleXMargin, size.y / 2);
 
       aiPaddle = Paddle(
         isPlayer: false,
         heightFactor: difficultyConfig.paddleHeightFactor,
         color: _whitePaint,
       )..anchor = Anchor.center
-       ..position = Vector2(newSize.x - _paddleXMargin, newSize.y / 2);
+       ..position = Vector2(size.x - _paddleXMargin, size.y / 2);
 
-      ball = Ball(
-        baseSpeed: difficultyConfig.ballSpeed,
-        color: _whitePaint,
-      )..anchor = Anchor.center
-       ..position = newSize / 2;
+        ball = Ball(
+          baseSpeed: difficultyConfig.ballSpeed,
+          color: _whitePaint,
+          diameter: difficultyConfig.ballSize,
+        )..anchor = Anchor.center
+         ..position = size / 2;
 
-      addAll([playerPaddle, aiPaddle, ball]);
-      playerPaddle.add(RectangleHitbox());
-      aiPaddle.add(RectangleHitbox());
-      ball.add(CircleHitbox());
+  addAll([playerPaddle, aiPaddle, ball]);
+  playerPaddle.add(RectangleHitbox());
+  aiPaddle.add(RectangleHitbox());
       _initialized = true;
     }
 
     if (_initialized) {
       // Adjust paddle heights to the new screen height
-      playerPaddle.size.y = newSize.y * playerPaddle.heightFactor;
-      aiPaddle.size.y = newSize.y * aiPaddle.heightFactor;
-      playerPaddle.clamp(newSize.y);
-      aiPaddle.clamp(newSize.y);
+      playerPaddle.size.y = size.y * playerPaddle.heightFactor;
+      aiPaddle.size.y = size.y * aiPaddle.heightFactor;
+      playerPaddle.clamp(size.y);
+      aiPaddle.clamp(size.y);
     }
   }
 
@@ -177,7 +177,7 @@ class PongGame extends FlameGame with HasCollisionDetection {
 
 /// Paddle component
 class Paddle extends PositionComponent
-  with HasGameRef<PongGame>, CollisionCallbacks {
+  with HasGameReference<PongGame>, CollisionCallbacks {
   Paddle({
     required this.isPlayer,
     required this.heightFactor,
@@ -187,7 +187,7 @@ class Paddle extends PositionComponent
   final bool isPlayer;
   final double heightFactor;
   final Paint _paint;
-  static const double paddleWidth = 14.0;
+  
 
   // For smooth AI movement (player doesn't use)
   double currentVelY = 0.0;
@@ -195,7 +195,8 @@ class Paddle extends PositionComponent
   @override
   Future<void> onLoad() async {
     await super.onLoad();
-    size = Vector2(paddleWidth, gameRef.size.y * heightFactor);
+    final width = game.difficultyConfig.paddleWidth;
+    size = Vector2(width, game.size.y * heightFactor);
     anchor = Anchor.center;
   }
 
@@ -218,14 +219,17 @@ class Paddle extends PositionComponent
 }
 
 /// Ball
-class Ball extends PositionComponent with HasGameRef<PongGame>, CollisionCallbacks {
+class Ball extends PositionComponent with HasGameReference<PongGame>, CollisionCallbacks {
   Ball({
     required this.baseSpeed,
     required Paint color,
-  }) : _paint = color;
+    double? diameter,
+  }) : _paint = color,
+       _diameter = diameter;
 
   final double baseSpeed;
   final Paint _paint;
+  final double? _diameter;
 
   Vector2 velocity = Vector2.zero();
   final Random _rng = Random();
@@ -239,8 +243,11 @@ class Ball extends PositionComponent with HasGameRef<PongGame>, CollisionCallbac
   @override
   Future<void> onLoad() async {
     await super.onLoad();
-    size = Vector2.all(12);
+    final d = _diameter ?? 12;
+    size = Vector2.all(d);
     anchor = Anchor.center;
+    // Ensure the hitbox matches current size/shape
+    add(CircleHitbox());
     reset();
   }
 
@@ -258,7 +265,7 @@ class Ball extends PositionComponent with HasGameRef<PongGame>, CollisionCallbac
     position += velocity * dt;
 
     final half = size.x / 2;
-    final h = gameRef.size.y;
+  final h = game.size.y;
 
     // Bounce off top/bottom walls (accounting for radius)
     if (position.y < half) {
@@ -277,14 +284,14 @@ class Ball extends PositionComponent with HasGameRef<PongGame>, CollisionCallbac
   }
 
   @override
-  void onCollision(Set<Vector2> intersectionPoints, PositionComponent other) {
-    super.onCollision(intersectionPoints, other);
+  void onCollisionStart(Set<Vector2> intersectionPoints, PositionComponent other) {
+    super.onCollisionStart(intersectionPoints, other);
     if (other is Paddle) {
-      _bounceFrom(other);
+      _bounceFrom(other, intersectionPoints: intersectionPoints);
     }
   }
 
-  void _bounceFrom(Paddle paddle) {
+  void _bounceFrom(Paddle paddle, {Set<Vector2>? intersectionPoints}) {
   // Speed before impact
     final incomingSpeed = velocity.length;
     final targetSpeed = (incomingSpeed * _speedGrowthPerHit)
@@ -292,8 +299,17 @@ class Ball extends PositionComponent with HasGameRef<PongGame>, CollisionCallbac
 
     final horizontalDir = -velocity.x.sign;
 
-    // Offset -1..1 (top = -1, bottom = +1)
-    double offset = (position.y - paddle.position.y) / (paddle.size.y / 2);
+    // Offset -1..1 (top = -1, bottom = +1) based on actual contact point if available
+    double contactY;
+    if (intersectionPoints != null && intersectionPoints.isNotEmpty) {
+      // Average intersection point for stability when multiple points
+      final Vector2 avg = intersectionPoints.reduce((a, b) => a + b) /
+          intersectionPoints.length.toDouble();
+      contactY = avg.y;
+    } else {
+      contactY = position.y;
+    }
+    double offset = (contactY - paddle.position.y) / (paddle.size.y / 2);
     offset = offset.clamp(-1.0, 1.0);
 
     // Spin angle based on contact offset
@@ -325,13 +341,7 @@ class Ball extends PositionComponent with HasGameRef<PongGame>, CollisionCallbac
 
   @override
   void render(Canvas canvas) {
-    canvas.drawRect(
-      Rect.fromCenter(
-        center: Offset.zero,
-        width: size.x,
-        height: size.y,
-      ),
-      _paint,
-    );
+    final radius = size.x / 2;
+    canvas.drawCircle(Offset.zero, radius, _paint);
   }
 }
