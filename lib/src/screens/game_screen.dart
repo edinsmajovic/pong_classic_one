@@ -1,5 +1,6 @@
 import 'package:flame/game.dart';
 import 'package:flutter/material.dart';
+import 'dart:ui' show FontFeature; // for tabular figures
 import '../game/pong_game.dart';
 import '../game/difficulty.dart';
 import '../app.dart';
@@ -20,6 +21,10 @@ class _GameScreenState extends State<GameScreen> {
   bool _gameOver = false;
   bool _dialogShown = false;
   bool _scoreUpdateScheduled = false;
+  // Speed-up banner state
+  String? _speedBannerText;
+  bool _speedBannerVisible = false;
+  int _lastSpeedStep = 0;
 
   // Drag state
   double? _dragStartPaddleY;
@@ -40,7 +45,30 @@ class _GameScreenState extends State<GameScreen> {
         onGameOver: ({required bool playerWon, required int player, required int ai}) {
           if (!mounted) return;
           _gameOver = true;
-          Future.microtask(() => _showGameOverDialog(playerWon));
+          // Ensure UI reflects the final score before showing dialog
+          setState(() {
+            playerScore = player;
+            aiScore = ai;
+          });
+          Future.microtask(() => _showGameOverDialog(playerWon: playerWon, finalPlayer: player, finalAi: ai));
+        },
+        onSpeedUp: (multiplier, step) {
+          if (!mounted) return;
+          final m = multiplier.toStringAsFixed(2);
+          setState(() {
+            _lastSpeedStep = step;
+            _speedBannerText = 'Speed up x$m';
+            _speedBannerVisible = true;
+          });
+          Future.delayed(const Duration(milliseconds: 1600), () {
+            if (!mounted) return;
+            // Only hide if no newer step arrived meanwhile
+            if (_lastSpeedStep == step) {
+              setState(() {
+                _speedBannerVisible = false;
+              });
+            }
+          });
         },
       );
       _initialized = true;
@@ -52,8 +80,10 @@ class _GameScreenState extends State<GameScreen> {
     if (!_scoreUpdateScheduled) {
       _scoreUpdateScheduled = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || _gameOver) return;
+        // Always clear the scheduling flag so future scores can update
         _scoreUpdateScheduled = false;
+        if (!mounted) return;
+        // Update the UI score even if the game just ended so 11 is visible
         setState(() {
           playerScore = player;
           aiScore = ai;
@@ -63,7 +93,7 @@ class _GameScreenState extends State<GameScreen> {
     }
   }
 
-  void _showGameOverDialog(bool playerWon) {
+  void _showGameOverDialog({required bool playerWon, required int finalPlayer, required int finalAi}) {
     if (_dialogShown || !mounted) return;
     _dialogShown = true;
     showDialog(
@@ -71,7 +101,7 @@ class _GameScreenState extends State<GameScreen> {
       barrierDismissible: false,
       builder: (_) => AlertDialog(
         title: Text(playerWon ? 'YOU WIN' : 'YOU LOSE'),
-        content: Text('Final Score: $playerScore - $aiScore'),
+        content: Text('Final Score: $finalPlayer - $finalAi'),
         actions: [
           TextButton(
             onPressed: () {
@@ -100,6 +130,7 @@ class _GameScreenState extends State<GameScreen> {
       aiScore = 0;
       _gameOver = false;
       _dialogShown = false;
+      _scoreUpdateScheduled = false; // reset guards
     });
     game!
       ..playerScore = 0
@@ -182,6 +213,38 @@ class _GameScreenState extends State<GameScreen> {
                           ),
                         ),
                       ],
+                    ),
+                  ),
+                  // Speed-up floating banner
+                  Positioned(
+                    top: 52,
+                    left: 0,
+                    right: 0,
+                    child: IgnorePointer(
+                      child: AnimatedOpacity(
+                        opacity: _speedBannerVisible ? 1.0 : 0.0,
+                        duration: const Duration(milliseconds: 220),
+                        curve: Curves.easeOut,
+                        child: Center(
+                          child: AnimatedScale(
+                            scale: _speedBannerVisible ? 1.0 : 0.98,
+                            duration: const Duration(milliseconds: 220),
+                            curve: Curves.easeOut,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: Colors.black54,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: Colors.white24, width: 1),
+                              ),
+                              child: Text(
+                                _speedBannerText ?? '',
+                                style: const TextStyle(color: Colors.white, fontSize: 14),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                   Positioned(

@@ -11,11 +11,13 @@ class PongGame extends FlameGame with HasCollisionDetection {
     required this.difficultyConfig,
     required this.onScore,
     required this.onGameOver,
+    this.onSpeedUp,
   });
 
   final DifficultyConfig difficultyConfig;
   final void Function(int player, int ai) onScore;
   final void Function({required bool playerWon, required int player, required int ai}) onGameOver;
+  final void Function(double totalMultiplier, int step)? onSpeedUp;
 
   /// Convenience getter so UI code can still call game.targetScore
   int get targetScore => difficultyConfig.targetScore;
@@ -33,6 +35,9 @@ class PongGame extends FlameGame with HasCollisionDetection {
 
   // Anti double-score cooldown after a point (seconds)
   final Timer _scoreCooldownTimer = Timer(0.4, autoStart: false);
+  // Periodic speed-up every 30 seconds
+  Timer? _speedUpTimer; // created after ball is initialized
+  int _speedUpSteps = 0;
 
   // Cached paints (less GC)
   final Paint _whitePaint = Paint()..color = const Color(0xFFFFFFFF);
@@ -50,7 +55,7 @@ class PongGame extends FlameGame with HasCollisionDetection {
   void onGameResize(Vector2 size) {
     super.onGameResize(size);
     // First-time initialization when we receive a valid size
-    if (!_initialized && size.x > 0 && size.y > 0) {
+  if (!_initialized && size.x > 0 && size.y > 0) {
       playerPaddle = Paddle(
         isPlayer: true,
         heightFactor: difficultyConfig.paddleHeightFactor,
@@ -73,15 +78,21 @@ class PongGame extends FlameGame with HasCollisionDetection {
          ..position = size / 2;
 
   addAll([playerPaddle, aiPaddle, ball]);
-  playerPaddle.add(RectangleHitbox());
-  aiPaddle.add(RectangleHitbox());
       _initialized = true;
+      // Start periodic speed increase (10% every 30 seconds)
+      _speedUpTimer = Timer(30, repeat: true, autoStart: true, onTick: () {
+        ball.increaseGlobalSpeed(1.10);
+        _speedUpSteps++;
+        onSpeedUp?.call(ball.globalSpeedMultiplier, _speedUpSteps);
+      });
     }
 
     if (_initialized) {
       // Adjust paddle heights to the new screen height
       playerPaddle.size.y = size.y * playerPaddle.heightFactor;
       aiPaddle.size.y = size.y * aiPaddle.heightFactor;
+      playerPaddle.syncHitbox();
+      aiPaddle.syncHitbox();
       playerPaddle.clamp(size.y);
       aiPaddle.clamp(size.y);
     }
@@ -92,6 +103,7 @@ class PongGame extends FlameGame with HasCollisionDetection {
     super.update(dt);
     if (!_initialized) return; // wait until components are ready
     _scoreCooldownTimer.update(dt);
+    _speedUpTimer?.update(dt);
 
     // --- AI movement (smooth) ---
     // Dead-zone to avoid jitter, then limit acceleration.
@@ -187,6 +199,7 @@ class Paddle extends PositionComponent
   final bool isPlayer;
   final double heightFactor;
   final Paint _paint;
+  RectangleHitbox? _hitbox;
   
 
   // For smooth AI movement (player doesn't use)
@@ -198,6 +211,19 @@ class Paddle extends PositionComponent
     final width = game.difficultyConfig.paddleWidth;
     size = Vector2(width, game.size.y * heightFactor);
     anchor = Anchor.center;
+    // Centered hitbox that matches the visual rect
+  _hitbox = RectangleHitbox(size: size, anchor: Anchor.center);
+  add(_hitbox!);
+  }
+
+  // Keep hitbox in sync when the paddle size changes (e.g., on resize)
+  void syncHitbox() {
+    final hb = _hitbox;
+    if (hb == null) return; // onLoad may not have run yet
+    hb
+      ..size = size
+      ..position = Vector2.zero()
+      ..anchor = Anchor.center;
   }
 
   void clamp(double screenHeight) {
@@ -230,6 +256,8 @@ class Ball extends PositionComponent with HasGameReference<PongGame>, CollisionC
   final double baseSpeed;
   final Paint _paint;
   final double? _diameter;
+  double _globalSpeedMultiplier = 1.0; // grows over time
+  double get globalSpeedMultiplier => _globalSpeedMultiplier;
 
   Vector2 velocity = Vector2.zero();
   final Random _rng = Random();
@@ -255,7 +283,7 @@ class Ball extends PositionComponent with HasGameReference<PongGame>, CollisionC
     // Initial angle: slight vertical variation
     final angle = (_rng.nextDouble() * pi / 3) - pi / 6;
     final dir = towardPlayer ? pi : 0;
-    velocity = Vector2(cos(dir + angle), sin(dir + angle)) * baseSpeed;
+    velocity = Vector2(cos(dir + angle), sin(dir + angle)) * (baseSpeed * _globalSpeedMultiplier);
   }
 
   @override
@@ -277,7 +305,7 @@ class Ball extends PositionComponent with HasGameReference<PongGame>, CollisionC
     }
 
     // Limit speed to avoid tunneling
-    final maxSpeed = baseSpeed * _maxSpeedMultiplier;
+    final maxSpeed = baseSpeed * _maxSpeedMultiplier * _globalSpeedMultiplier;
     if (velocity.length > maxSpeed) {
       velocity.scaleTo(maxSpeed);
     }
@@ -294,8 +322,9 @@ class Ball extends PositionComponent with HasGameReference<PongGame>, CollisionC
   void _bounceFrom(Paddle paddle, {Set<Vector2>? intersectionPoints}) {
   // Speed before impact
     final incomingSpeed = velocity.length;
-    final targetSpeed = (incomingSpeed * _speedGrowthPerHit)
-        .clamp(baseSpeed * 0.9, baseSpeed * _maxSpeedMultiplier);
+    final lower = baseSpeed * 0.9 * _globalSpeedMultiplier;
+    final upper = baseSpeed * _maxSpeedMultiplier * _globalSpeedMultiplier;
+    final targetSpeed = (incomingSpeed * _speedGrowthPerHit).clamp(lower, upper);
 
     final horizontalDir = -velocity.x.sign;
 
@@ -321,7 +350,7 @@ class Ball extends PositionComponent with HasGameReference<PongGame>, CollisionC
     double newVy = sin(angle) * targetSpeed;
 
     // Minimum horizontal component to prevent the ball from becoming "vertical"
-    final minHoriz = baseSpeed * _minHorizontalRatio;
+    final minHoriz = baseSpeed * _minHorizontalRatio * _globalSpeedMultiplier;
     if (newVx.abs() < minHoriz) {
       newVx = minHoriz * newVx.sign;
       final remaining = (targetSpeed * targetSpeed - newVx * newVx).clamp(0, double.infinity);
@@ -343,5 +372,13 @@ class Ball extends PositionComponent with HasGameReference<PongGame>, CollisionC
   void render(Canvas canvas) {
     final radius = size.x / 2;
     canvas.drawCircle(Offset.zero, radius, _paint);
+  }
+
+  // Called by game every 30s to speed up gameplay
+  void increaseGlobalSpeed(double factor) {
+    if (factor <= 0) return;
+    _globalSpeedMultiplier *= factor;
+    // Immediately scale current velocity so the change is felt right away
+    velocity.scale(factor);
   }
 }
