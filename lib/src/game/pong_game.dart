@@ -44,6 +44,9 @@ class PongGame extends FlameGame with HasCollisionDetection {
 
   // Scene constants
   static const double _paddleXMargin = 30.0;
+  // AI targeting state
+  double _aiTargetY = 0;
+  double _aiDecisionTimer = 0; // counts down to next reaction
 
   @override
   Future<void> onLoad() async {
@@ -91,10 +94,17 @@ class PongGame extends FlameGame with HasCollisionDetection {
       // Adjust paddle heights to the new screen height
       playerPaddle.size.y = size.y * playerPaddle.heightFactor;
       aiPaddle.size.y = size.y * aiPaddle.heightFactor;
+      // Reposition paddles horizontally in case orientation changed
+      playerPaddle.position.x = _paddleXMargin;
+      aiPaddle.position.x = size.x - _paddleXMargin;
       playerPaddle.syncHitbox();
       aiPaddle.syncHitbox();
       playerPaddle.clamp(size.y);
       aiPaddle.clamp(size.y);
+      // If the ball is now outside the new bounds (e.g., after rotation), recenter it
+      if (ball.position.x < 0 || ball.position.x > size.x) {
+        ball.position = size / 2;
+      }
     }
   }
 
@@ -105,12 +115,57 @@ class PongGame extends FlameGame with HasCollisionDetection {
     _scoreCooldownTimer.update(dt);
     _speedUpTimer?.update(dt);
 
+    // Update AI decision timer
+    _aiDecisionTimer -= dt;
+    if (_aiDecisionTimer <= 0) {
+      _aiDecisionTimer += difficultyConfig.aiReactionTime;
+
+      // Compute predicted intercept only if ball moving toward AI
+      double predictedY = ball.position.y;
+      if (ball.velocity.x > 0.0) {
+        final distanceX = (aiPaddle.position.x - ball.position.x).clamp(1, double.infinity);
+        final timeToReach = distanceX / ball.velocity.x.abs();
+        predictedY = ball.position.y + ball.velocity.y * timeToReach;
+        // Reflect predicted Y over top/bottom walls (infinite mirror technique)
+        final h = size.y;
+        if (h > 0) {
+          double period = 2 * h;
+            double modY = predictedY % period;
+            if (modY < 0) modY += period;
+            if (modY > h) {
+              modY = period - modY; // reflect phase
+            }
+            predictedY = modY;
+        }
+      }
+
+      // Blend with simple chase (ball current y) for lower difficulties
+      final blend = difficultyConfig.aiAnticipation;
+      double aimY = predictedY * blend + ball.position.y * (1 - blend);
+
+      // Add Gaussian-like error using Box-Muller for realism (single axis)
+      if (difficultyConfig.aiErrorStd > 0) {
+        final u1 = (Random().nextDouble().clamp(1e-6, 1.0));
+        final u2 = Random().nextDouble();
+        final z0 = sqrt(-2.0 * log(u1)) * cos(2 * pi * u2); // mean 0, std 1
+        aimY += z0 * difficultyConfig.aiErrorStd;
+      }
+
+      // Clamp target inside arena
+      final half = aiPaddle.size.y / 2;
+      _aiTargetY = aimY.clamp(half, size.y - half);
+    }
+
     // --- AI movement (smooth) ---
     // Dead-zone to avoid jitter, then limit acceleration.
-    final double dy = ball.position.y - aiPaddle.position.y;
+  final double dy = _aiTargetY - aiPaddle.position.y;
     const double deadZone = 6.0; // px
     if (dy.abs() > deadZone) {
-      final desiredVel = dy.sign * difficultyConfig.aiMaxSpeed;
+  // Adaptive speed boost if player is leading
+  final playerLead = (playerScore - aiScore).clamp(0, 100);
+  final adaptiveFactor = 1 + playerLead * difficultyConfig.aiAdaptiveBoost;
+  final maxSpeed = difficultyConfig.aiMaxSpeed * adaptiveFactor;
+  final desiredVel = dy.sign * maxSpeed;
       // Simple model: dV = clamp(accel * dt)
       final maxDeltaV = difficultyConfig.aiMaxAccel * dt;
       final currentVel = aiPaddle.currentVelY;
