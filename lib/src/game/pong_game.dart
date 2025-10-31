@@ -249,7 +249,9 @@ class Paddle extends PositionComponent
     final width = game.difficultyConfig.paddleWidth;
     size = Vector2(width, game.size.y * heightFactor);
     anchor = Anchor.center;
-    _hitbox = RectangleHitbox(size: size, anchor: Anchor.center);
+    // Align hitbox with visual rect drawn from top-left of the local bounds
+    _hitbox = RectangleHitbox(size: size, anchor: Anchor.topLeft)
+      ..position = Vector2.zero();
     add(_hitbox!);
   }
 
@@ -259,19 +261,19 @@ class Paddle extends PositionComponent
     hb
       ..size = size
       ..position = Vector2.zero()
-      ..anchor = Anchor.center;
+      ..anchor = Anchor.topLeft;
   }
 
   void clamp(double screenHeight) {
     final half = size.y / 2;
-    const double eps = 1.0; // tiny inset to stay visually inside the border
+    const double eps = 2.0; // slightly larger inset for crisp visual boundary
     position.y = position.y.clamp(half + eps, screenHeight - half - eps);
   }
 
   @override
   void render(Canvas canvas) {
-    // With anchor = center, Flame translates the canvas so that (0,0) is the
-    // top-left of this component's bounds. Draw from top-left for correct alignment.
+    // With anchor = center, Flame translates the canvas so local origin is the
+    // top-left of this component's bounds. Draw from top-left to match hitbox.
     final prevAA = _paint.isAntiAlias;
     _paint.isAntiAlias = false;
     canvas.drawRect(
@@ -433,9 +435,9 @@ class Ball extends PositionComponent
 
   @override
   void render(Canvas canvas) {
-    // With anchor = center, the local origin is the top-left; draw circle centered in bounds
+    // With anchor = center, draw the ball centered at the local origin.
     final radius = size.x / 2;
-    canvas.drawCircle(Offset(size.x / 2, size.y / 2), radius, _paint);
+    canvas.drawCircle(Offset.zero, radius, _paint);
   }
 
   void increaseGlobalSpeed(double factor) {
