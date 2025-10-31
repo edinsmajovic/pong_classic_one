@@ -5,7 +5,6 @@ import 'package:flame/game.dart';
 import 'package:flutter/material.dart';
 import 'difficulty.dart';
 
-/// Main game class
 class PongGame extends FlameGame with HasCollisionDetection {
   PongGame({
     required this.difficultyConfig,
@@ -19,9 +18,6 @@ class PongGame extends FlameGame with HasCollisionDetection {
   final void Function({required bool playerWon, required int player, required int ai}) onGameOver;
   final void Function(double totalMultiplier, int step)? onSpeedUp;
 
-  /// Convenience getter so UI code can still call game.targetScore
-  int get targetScore => difficultyConfig.targetScore;
-
   late Paddle playerPaddle;
   late Paddle aiPaddle;
   late Ball ball;
@@ -29,60 +25,59 @@ class PongGame extends FlameGame with HasCollisionDetection {
   int playerScore = 0;
   int aiScore = 0;
 
-  // Indicates whether core components (paddles, ball) have been created.
   bool _initialized = false;
   bool get isInitialized => _initialized;
 
-  // Anti double-score cooldown after a point (seconds)
   final Timer _scoreCooldownTimer = Timer(0.4, autoStart: false);
-  // Periodic speed-up every 30 seconds
-  Timer? _speedUpTimer; // created after ball is initialized
+  Timer? _speedUpTimer;
   int _speedUpSteps = 0;
 
-  // Cached paints (less GC)
-  final Paint _whitePaint = Paint()..color = const Color(0xFFFFFFFF);
-
-  // Scene constants
   static const double _paddleXMargin = 30.0;
-  // AI targeting state
+
   double _aiTargetY = 0;
-  double _aiDecisionTimer = 0; // counts down to next reaction
+  double _aiDecisionTimer = 0;
 
   @override
   Future<void> onLoad() async {
     await super.onLoad();
-    // Defer creation until we have a non-zero size in onGameResize.
   }
 
   @override
   void onGameResize(Vector2 size) {
     super.onGameResize(size);
-    // First-time initialization when we receive a valid size
-  if (!_initialized && size.x > 0 && size.y > 0) {
+
+    if (!_initialized && size.x > 0 && size.y > 0) {
+      // Add arena decoration inside the Flame world to guarantee perfect alignment
+      add(ArenaDecoration()..priority = -10);
+
       playerPaddle = Paddle(
         isPlayer: true,
         heightFactor: difficultyConfig.paddleHeightFactor,
-        color: _whitePaint,
+        color: Paint()..color = Colors.white,
       )..anchor = Anchor.center
        ..position = Vector2(_paddleXMargin, size.y / 2);
 
       aiPaddle = Paddle(
         isPlayer: false,
         heightFactor: difficultyConfig.paddleHeightFactor,
-        color: _whitePaint,
+        color: Paint()..color = Colors.white,
       )..anchor = Anchor.center
        ..position = Vector2(size.x - _paddleXMargin, size.y / 2);
 
-        ball = Ball(
-          baseSpeed: difficultyConfig.ballSpeed,
-          color: _whitePaint,
-          diameter: difficultyConfig.ballSize,
-        )..anchor = Anchor.center
-         ..position = size / 2;
+      ball = Ball(
+        baseSpeed: difficultyConfig.ballSpeed,
+        color: Paint()..color = Colors.white,
+        diameter: difficultyConfig.ballSize,
+      )..anchor = Anchor.center
+       ..position = size / 2;
 
-  addAll([playerPaddle, aiPaddle, ball]);
+      addAll([playerPaddle, aiPaddle, ball]);
       _initialized = true;
-      // Start periodic speed increase (10% every 30 seconds)
+
+      // koriguj X sada kada paddle.size.x postoji (posle onLoad)
+      playerPaddle.position.x = _paddleXMargin + playerPaddle.size.x / 2;
+      aiPaddle.position.x = size.x - _paddleXMargin - aiPaddle.size.x / 2;
+
       _speedUpTimer = Timer(30, repeat: true, autoStart: true, onTick: () {
         ball.increaseGlobalSpeed(1.10);
         _speedUpSteps++;
@@ -91,17 +86,17 @@ class PongGame extends FlameGame with HasCollisionDetection {
     }
 
     if (_initialized) {
-      // Adjust paddle heights to the new screen height
       playerPaddle.size.y = size.y * playerPaddle.heightFactor;
       aiPaddle.size.y = size.y * aiPaddle.heightFactor;
-      // Reposition paddles horizontally in case orientation changed
-      playerPaddle.position.x = _paddleXMargin;
-      aiPaddle.position.x = size.x - _paddleXMargin;
+
+      playerPaddle.position.x = _paddleXMargin + playerPaddle.size.x / 2;
+      aiPaddle.position.x = size.x - _paddleXMargin - aiPaddle.size.x / 2;
+
       playerPaddle.syncHitbox();
       aiPaddle.syncHitbox();
       playerPaddle.clamp(size.y);
       aiPaddle.clamp(size.y);
-      // If the ball is now outside the new bounds (e.g., after rotation), recenter it
+
       if (ball.position.x < 0 || ball.position.x > size.x) {
         ball.position = size / 2;
       }
@@ -111,71 +106,61 @@ class PongGame extends FlameGame with HasCollisionDetection {
   @override
   void update(double dt) {
     super.update(dt);
-    if (!_initialized) return; // wait until components are ready
+    if (!_initialized) return;
+
     _scoreCooldownTimer.update(dt);
     _speedUpTimer?.update(dt);
 
-    // Update AI decision timer
+    // AI meta
     _aiDecisionTimer -= dt;
     if (_aiDecisionTimer <= 0) {
       _aiDecisionTimer += difficultyConfig.aiReactionTime;
 
-      // Compute predicted intercept only if ball moving toward AI
       double predictedY = ball.position.y;
       if (ball.velocity.x > 0.0) {
         final distanceX = (aiPaddle.position.x - ball.position.x).clamp(1, double.infinity);
         final timeToReach = distanceX / ball.velocity.x.abs();
         predictedY = ball.position.y + ball.velocity.y * timeToReach;
-        // Reflect predicted Y over top/bottom walls (infinite mirror technique)
+
         final h = size.y;
         if (h > 0) {
           double period = 2 * h;
-            double modY = predictedY % period;
-            if (modY < 0) modY += period;
-            if (modY > h) {
-              modY = period - modY; // reflect phase
-            }
-            predictedY = modY;
+          double modY = predictedY % period;
+          if (modY < 0) modY += period;
+          if (modY > h) modY = period - modY;
+          predictedY = modY;
         }
       }
 
-      // Blend with simple chase (ball current y) for lower difficulties
       final blend = difficultyConfig.aiAnticipation;
       double aimY = predictedY * blend + ball.position.y * (1 - blend);
 
-      // Add Gaussian-like error using Box-Muller for realism (single axis)
       if (difficultyConfig.aiErrorStd > 0) {
-        final u1 = (Random().nextDouble().clamp(1e-6, 1.0));
+        final u1 = max(Random().nextDouble(), 1e-6);
         final u2 = Random().nextDouble();
-        final z0 = sqrt(-2.0 * log(u1)) * cos(2 * pi * u2); // mean 0, std 1
+        final z0 = sqrt(-2.0 * log(u1)) * cos(2 * pi * u2);
         aimY += z0 * difficultyConfig.aiErrorStd;
       }
 
-      // Clamp target inside arena
       final half = aiPaddle.size.y / 2;
       _aiTargetY = aimY.clamp(half, size.y - half);
     }
 
-    // --- AI movement (smooth) ---
-    // Dead-zone to avoid jitter, then limit acceleration.
-  final double dy = _aiTargetY - aiPaddle.position.y;
-    const double deadZone = 6.0; // px
+    // AI pomeranje
+    final double dy = _aiTargetY - aiPaddle.position.y;
+    const double deadZone = 6.0;
     if (dy.abs() > deadZone) {
-  // Adaptive speed boost if player is leading
-  final playerLead = (playerScore - aiScore).clamp(0, 100);
-  final adaptiveFactor = 1 + playerLead * difficultyConfig.aiAdaptiveBoost;
-  final maxSpeed = difficultyConfig.aiMaxSpeed * adaptiveFactor;
-  final desiredVel = dy.sign * maxSpeed;
-      // Simple model: dV = clamp(accel * dt)
+      final playerLead = (playerScore - aiScore).clamp(0, 100);
+      final adaptiveFactor = 1 + playerLead * difficultyConfig.aiAdaptiveBoost;
+      final maxSpeed = difficultyConfig.aiMaxSpeed * adaptiveFactor;
+      final desiredVel = dy.sign * maxSpeed;
       final maxDeltaV = difficultyConfig.aiMaxAccel * dt;
       final currentVel = aiPaddle.currentVelY;
-      final deltaV = (desiredVel - currentVel)
-          .clamp(-maxDeltaV, maxDeltaV);
+      final deltaV = (desiredVel - currentVel).clamp(-maxDeltaV, maxDeltaV);
       final newVel = currentVel + deltaV;
       aiPaddle.currentVelY = newVel;
       aiPaddle.position.y += newVel * dt;
     } else {
-      // slow down toward 0
       final currentVel = aiPaddle.currentVelY;
       final decel = difficultyConfig.aiMaxAccel * dt;
       if (currentVel.abs() <= decel) {
@@ -185,11 +170,10 @@ class PongGame extends FlameGame with HasCollisionDetection {
       }
     }
 
-    // Clamp paddle positions
     aiPaddle.clamp(size.y);
     playerPaddle.clamp(size.y);
 
-    // --- Point check (ball passed left/right boundary) ---
+    // Poeni
     if (!_scoreCooldownTimer.isRunning()) {
       final half = ball.size.x / 2;
       if (ball.position.x < -half) {
@@ -200,17 +184,22 @@ class PongGame extends FlameGame with HasCollisionDetection {
     }
   }
 
-  /// Called from Flutter gesture layer to move the player paddle.
-  /// [worldDy] should already be converted to game/world coordinates if needed.
-  void onPlayerDrag(double worldDy) {
-    playerPaddle.position.y = worldDy;
+  /// Pomeri igračevu palicu za delta u WORLD koordinatama (bez snap-a).
+  void nudgePlayer(double worldDeltaY) {
+    playerPaddle.position.y += worldDeltaY;
+    playerPaddle.clamp(size.y);
+  }
+
+  /// (Zadržiš i ako negde želiš apsolutno, ali je više ne koristimo iz UI-a)
+  void onPlayerDrag(double worldY) {
+    playerPaddle.position.y = worldY;
     playerPaddle.clamp(size.y);
   }
 
   void _resetBall({required bool towardPlayer}) {
     ball.position = size / 2;
     ball.reset(towardPlayer: towardPlayer);
-    _scoreCooldownTimer.start(); // short safeguard against double scoring
+    _scoreCooldownTimer.start();
   }
 
   void _registerScore({required bool playerScored}) {
@@ -222,7 +211,6 @@ class PongGame extends FlameGame with HasCollisionDetection {
 
     onScore(playerScore, aiScore);
 
-    // End of round?
     if (playerScore >= difficultyConfig.targetScore ||
         aiScore >= difficultyConfig.targetScore) {
       pauseEngine();
@@ -234,17 +222,14 @@ class PongGame extends FlameGame with HasCollisionDetection {
       return;
     }
 
-    // New serve toward the player who conceded the point
     _resetBall(towardPlayer: !playerScored);
   }
 
-  /// Public wrapper for resetting the ball toward a random side (default toward AI).
   void resetBall() => _resetBall(towardPlayer: false);
 }
 
-/// Paddle component
 class Paddle extends PositionComponent
-  with HasGameReference<PongGame>, CollisionCallbacks {
+    with HasGameReference<PongGame>, CollisionCallbacks {
   Paddle({
     required this.isPlayer,
     required this.heightFactor,
@@ -255,9 +240,7 @@ class Paddle extends PositionComponent
   final double heightFactor;
   final Paint _paint;
   RectangleHitbox? _hitbox;
-  
 
-  // For smooth AI movement (player doesn't use)
   double currentVelY = 0.0;
 
   @override
@@ -266,15 +249,13 @@ class Paddle extends PositionComponent
     final width = game.difficultyConfig.paddleWidth;
     size = Vector2(width, game.size.y * heightFactor);
     anchor = Anchor.center;
-    // Centered hitbox that matches the visual rect
-  _hitbox = RectangleHitbox(size: size, anchor: Anchor.center);
-  add(_hitbox!);
+    _hitbox = RectangleHitbox(size: size, anchor: Anchor.center);
+    add(_hitbox!);
   }
 
-  // Keep hitbox in sync when the paddle size changes (e.g., on resize)
   void syncHitbox() {
     final hb = _hitbox;
-    if (hb == null) return; // onLoad may not have run yet
+    if (hb == null) return;
     hb
       ..size = size
       ..position = Vector2.zero()
@@ -283,45 +264,84 @@ class Paddle extends PositionComponent
 
   void clamp(double screenHeight) {
     final half = size.y / 2;
-    position.y = position.y.clamp(half, screenHeight - half);
+    const double eps = 1.0; // tiny inset to stay visually inside the border
+    position.y = position.y.clamp(half + eps, screenHeight - half - eps);
   }
 
   @override
   void render(Canvas canvas) {
+    // With anchor = center, Flame translates the canvas so that (0,0) is the
+    // top-left of this component's bounds. Draw from top-left for correct alignment.
+    final prevAA = _paint.isAntiAlias;
+    _paint.isAntiAlias = false;
     canvas.drawRect(
-      Rect.fromCenter(
-        center: Offset.zero,
-        width: size.x,
-        height: size.y,
-      ),
+      Rect.fromLTWH(0, 0, size.x, size.y),
       _paint,
     );
+    _paint.isAntiAlias = prevAA;
   }
 }
 
-/// Ball
-class Ball extends PositionComponent with HasGameReference<PongGame>, CollisionCallbacks {
+/// Draws the arena border and center dashed line within the Flame world
+class ArenaDecoration extends Component with HasGameReference<PongGame> {
+  late final Paint _borderPaint;
+  late final Paint _linePaint;
+
+  @override
+  Future<void> onLoad() async {
+    _borderPaint = Paint()
+      ..color = Colors.white24
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+    _linePaint = Paint()
+      ..color = Colors.white24
+      ..strokeWidth = 4;
+  }
+
+  @override
+  void render(Canvas canvas) {
+    final sz = game.size;
+    // Border
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, sz.x, sz.y),
+      _borderPaint,
+    );
+
+    // Center dashed line
+    const double segment = 18.0;
+    const double gap = 14.0;
+    final double x = sz.x / 2;
+    double y = 0;
+    while (y < sz.y) {
+      final double y2 = (y + segment).clamp(0, sz.y);
+      canvas.drawLine(Offset(x, y), Offset(x, y2), _linePaint);
+      y += segment + gap;
+    }
+  }
+}
+
+class Ball extends PositionComponent
+    with HasGameReference<PongGame>, CollisionCallbacks {
   Ball({
     required this.baseSpeed,
     required Paint color,
     double? diameter,
-  }) : _paint = color,
-       _diameter = diameter;
+  })  : _paint = color,
+        _diameter = diameter;
 
   final double baseSpeed;
   final Paint _paint;
   final double? _diameter;
-  double _globalSpeedMultiplier = 1.0; // grows over time
+  double _globalSpeedMultiplier = 1.0;
   double get globalSpeedMultiplier => _globalSpeedMultiplier;
 
   Vector2 velocity = Vector2.zero();
   final Random _rng = Random();
 
-  // Tuning
-  static const double _maxSpeedMultiplier = 2.6; // limit runaway speed
-  static const double _minHorizontalRatio = 0.32; // % of baseSpeed that must remain horizontal
+  static const double _maxSpeedMultiplier = 2.6;
+  static const double _minHorizontalRatio = 0.32;
   static const double _speedGrowthPerHit = 1.03;
-  static const double _maxSpinAngleDeg = 50; // +/- from perfectly horizontal
+  static const double _maxSpinAngleDeg = 50;
 
   @override
   Future<void> onLoad() async {
@@ -329,28 +349,25 @@ class Ball extends PositionComponent with HasGameReference<PongGame>, CollisionC
     final d = _diameter ?? 12;
     size = Vector2.all(d);
     anchor = Anchor.center;
-    // Ensure the hitbox matches current size/shape
     add(CircleHitbox());
     reset();
   }
 
   void reset({bool towardPlayer = false}) {
-    // Initial angle: slight vertical variation
     final angle = (_rng.nextDouble() * pi / 3) - pi / 6;
     final dir = towardPlayer ? pi : 0;
-    velocity = Vector2(cos(dir + angle), sin(dir + angle)) * (baseSpeed * _globalSpeedMultiplier);
+    velocity =
+        Vector2(cos(dir + angle), sin(dir + angle)) * (baseSpeed * _globalSpeedMultiplier);
   }
 
   @override
   void update(double dt) {
     super.update(dt);
-    // Integrate position
     position += velocity * dt;
 
     final half = size.x / 2;
-  final h = game.size.y;
+    final h = game.size.y;
 
-    // Bounce off top/bottom walls (accounting for radius)
     if (position.y < half) {
       position.y = half;
       velocity.y = -velocity.y;
@@ -359,7 +376,6 @@ class Ball extends PositionComponent with HasGameReference<PongGame>, CollisionC
       velocity.y = -velocity.y;
     }
 
-    // Limit speed to avoid tunneling
     final maxSpeed = baseSpeed * _maxSpeedMultiplier * _globalSpeedMultiplier;
     if (velocity.length > maxSpeed) {
       velocity.scaleTo(maxSpeed);
@@ -375,7 +391,6 @@ class Ball extends PositionComponent with HasGameReference<PongGame>, CollisionC
   }
 
   void _bounceFrom(Paddle paddle, {Set<Vector2>? intersectionPoints}) {
-  // Speed before impact
     final incomingSpeed = velocity.length;
     final lower = baseSpeed * 0.9 * _globalSpeedMultiplier;
     final upper = baseSpeed * _maxSpeedMultiplier * _globalSpeedMultiplier;
@@ -383,32 +398,26 @@ class Ball extends PositionComponent with HasGameReference<PongGame>, CollisionC
 
     final horizontalDir = -velocity.x.sign;
 
-    // Offset -1..1 (top = -1, bottom = +1) based on actual contact point if available
-    double contactY;
+    double contactY = position.y;
     if (intersectionPoints != null && intersectionPoints.isNotEmpty) {
-      // Average intersection point for stability when multiple points
-      final Vector2 avg = intersectionPoints.reduce((a, b) => a + b) /
+      final avg = intersectionPoints.reduce((a, b) => a + b) /
           intersectionPoints.length.toDouble();
       contactY = avg.y;
-    } else {
-      contactY = position.y;
     }
     double offset = (contactY - paddle.position.y) / (paddle.size.y / 2);
     offset = offset.clamp(-1.0, 1.0);
 
-    // Spin angle based on contact offset
     final maxAngleRad = _maxSpinAngleDeg * pi / 180.0;
     final angle = offset * maxAngleRad;
 
-    // New velocity vector from polar components
     double newVx = cos(angle) * targetSpeed * horizontalDir;
     double newVy = sin(angle) * targetSpeed;
 
-    // Minimum horizontal component to prevent the ball from becoming "vertical"
     final minHoriz = baseSpeed * _minHorizontalRatio * _globalSpeedMultiplier;
     if (newVx.abs() < minHoriz) {
       newVx = minHoriz * newVx.sign;
-      final remaining = (targetSpeed * targetSpeed - newVx * newVx).clamp(0, double.infinity);
+      final remaining =
+          (targetSpeed * targetSpeed - newVx * newVx).clamp(0, double.infinity);
       newVy = newVy.sign * sqrt(remaining);
     }
 
@@ -416,7 +425,6 @@ class Ball extends PositionComponent with HasGameReference<PongGame>, CollisionC
       ..x = newVx
       ..y = newVy;
 
-    // Push the ball slightly away from the paddle to prevent sticking
     final separation = (size.x / 2) + (paddle.size.x / 2) + 0.5;
     position.x = paddle.isPlayer
         ? paddle.position.x + separation
@@ -425,15 +433,14 @@ class Ball extends PositionComponent with HasGameReference<PongGame>, CollisionC
 
   @override
   void render(Canvas canvas) {
+    // With anchor = center, the local origin is the top-left; draw circle centered in bounds
     final radius = size.x / 2;
-    canvas.drawCircle(Offset.zero, radius, _paint);
+    canvas.drawCircle(Offset(size.x / 2, size.y / 2), radius, _paint);
   }
 
-  // Called by game every 30s to speed up gameplay
   void increaseGlobalSpeed(double factor) {
     if (factor <= 0) return;
     _globalSpeedMultiplier *= factor;
-    // Immediately scale current velocity so the change is felt right away
     velocity.scale(factor);
   }
 }

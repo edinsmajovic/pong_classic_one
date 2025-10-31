@@ -1,6 +1,5 @@
 import 'package:flame/game.dart';
 import 'package:flutter/material.dart';
-import 'dart:ui' show FontFeature; // for tabular figures
 import '../game/pong_game.dart';
 import '../game/difficulty.dart';
 import '../app.dart';
@@ -14,21 +13,23 @@ class GameScreen extends StatefulWidget {
 }
 
 class _GameScreenState extends State<GameScreen> {
-  PongGame? game; // created after we can read purchase state
+  PongGame? game;
   int playerScore = 0;
   int aiScore = 0;
   bool _initialized = false;
   bool _gameOver = false;
   bool _dialogShown = false;
   bool _scoreUpdateScheduled = false;
-  // Speed-up banner state
+
+  // Speed-up banner
   String? _speedBannerText;
   bool _speedBannerVisible = false;
   int _lastSpeedStep = 0;
 
-  // Drag state
-  double? _dragStartPaddleY;
-  double? _dragStartGlobalY;
+  // Drag (absolute with preserved offset when touch starts on the paddle)
+  final GlobalKey _arenaKey = GlobalKey(debugLabel: 'arena_key');
+  final GlobalKey _gameKey = GlobalKey(debugLabel: 'game_widget_key');
+  double? _dragOffsetWorldY; // difference between paddle center and finger in world coords
 
   @override
   void didChangeDependencies() {
@@ -45,12 +46,12 @@ class _GameScreenState extends State<GameScreen> {
         onGameOver: ({required bool playerWon, required int player, required int ai}) {
           if (!mounted) return;
           _gameOver = true;
-          // Ensure UI reflects the final score before showing dialog
           setState(() {
             playerScore = player;
             aiScore = ai;
           });
-          Future.microtask(() => _showGameOverDialog(playerWon: playerWon, finalPlayer: player, finalAi: ai));
+          Future.microtask(() =>
+              _showGameOverDialog(playerWon: playerWon, finalPlayer: player, finalAi: ai));
         },
         onSpeedUp: (multiplier, step) {
           if (!mounted) return;
@@ -62,11 +63,8 @@ class _GameScreenState extends State<GameScreen> {
           });
           Future.delayed(const Duration(milliseconds: 1600), () {
             if (!mounted) return;
-            // Only hide if no newer step arrived meanwhile
             if (_lastSpeedStep == step) {
-              setState(() {
-                _speedBannerVisible = false;
-              });
+              setState(() => _speedBannerVisible = false);
             }
           });
         },
@@ -80,20 +78,21 @@ class _GameScreenState extends State<GameScreen> {
     if (!_scoreUpdateScheduled) {
       _scoreUpdateScheduled = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        // Always clear the scheduling flag so future scores can update
         _scoreUpdateScheduled = false;
         if (!mounted) return;
-        // Update the UI score even if the game just ended so 11 is visible
         setState(() {
           playerScore = player;
           aiScore = ai;
         });
-        // Game over now handled by onGameOver callback from PongGame
       });
     }
   }
 
-  void _showGameOverDialog({required bool playerWon, required int finalPlayer, required int finalAi}) {
+  void _showGameOverDialog({
+    required bool playerWon,
+    required int finalPlayer,
+    required int finalAi,
+  }) {
     if (_dialogShown || !mounted) return;
     _dialogShown = true;
     showDialog(
@@ -106,15 +105,15 @@ class _GameScreenState extends State<GameScreen> {
           TextButton(
             onPressed: () {
               if (!mounted) return;
-              Navigator.pop(context); // dialog
-              Navigator.pop(context); // back to menu
+              Navigator.pop(context);
+              Navigator.pop(context);
             },
             child: const Text('MENU'),
           ),
           ElevatedButton(
             onPressed: () {
               if (!mounted) return;
-              Navigator.pop(context); // dialog
+              Navigator.pop(context);
               _restart();
             },
             child: const Text('RETRY'),
@@ -130,7 +129,7 @@ class _GameScreenState extends State<GameScreen> {
       aiScore = 0;
       _gameOver = false;
       _dialogShown = false;
-      _scoreUpdateScheduled = false; // reset guards
+      _scoreUpdateScheduled = false;
     });
     game!
       ..playerScore = 0
@@ -139,61 +138,73 @@ class _GameScreenState extends State<GameScreen> {
       ..resumeEngine();
   }
 
+  // --- Gesture helpers (delta-based) ---
+  void _onDragStart(DragStartDetails details) {
+    final box = _arenaKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || game == null || !game!.isInitialized) return;
+    final local = box.globalToLocal(details.globalPosition);
+    final hScreen = box.size.height;
+    final hWorld = game!.size.y;
+    final ratio = (hScreen > 0) ? (hWorld / hScreen) : 1.0;
+    final worldY = local.dy * ratio;
+
+    // If touch begins within the paddle, preserve the offset to avoid snap; else follow absolute
+    final paddle = game!.playerPaddle;
+    final half = paddle.size.y / 2;
+    if (worldY >= paddle.position.y - half && worldY <= paddle.position.y + half) {
+      _dragOffsetWorldY = paddle.position.y - worldY;
+    } else {
+      _dragOffsetWorldY = 0.0; // absolute follow
+    }
+  }
+
+  void _onDragUpdate(DragUpdateDetails details) {
+    if (game == null || !game!.isInitialized) return;
+    final arenaBox = _arenaKey.currentContext?.findRenderObject() as RenderBox?;
+    if (arenaBox == null) return;
+    final local = arenaBox.globalToLocal(details.globalPosition);
+
+    final hScreen = arenaBox.size.height;
+    final hWorld = game!.size.y;
+    final ratio = (hScreen > 0) ? (hWorld / hScreen) : 1.0;
+    final worldY = local.dy * ratio;
+    final targetY = worldY + (_dragOffsetWorldY ?? 0.0);
+    game!.onPlayerDrag(targetY); // absolute follow with preserved offset
+  }
+
+  void _onDragEnd(DragEndDetails _) {
+    _dragOffsetWorldY = null;
+  }
+
   @override
   Widget build(BuildContext context) {
     if (game == null) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
     return Scaffold(
-      body: GestureDetector(
-        onVerticalDragStart: (details) {
-          final box = context.findRenderObject() as RenderBox?;
-          if (box == null || game == null || !game!.isInitialized) return;
-          final local = box.globalToLocal(details.globalPosition);
-          _dragStartGlobalY = local.dy;
-          _dragStartPaddleY = game!.playerPaddle.position.y;
-        },
-        onVerticalDragUpdate: (details) {
-          if (game == null || !game!.isInitialized || _dragStartGlobalY == null || _dragStartPaddleY == null) return;
-          final box = context.findRenderObject() as RenderBox?;
-          if (box == null) return;
-          final local = box.globalToLocal(details.globalPosition);
-          final delta = local.dy - _dragStartGlobalY!;
-          final targetY = _dragStartPaddleY! + delta;
-          game!.onPlayerDrag(targetY);
-        },
-        onVerticalDragEnd: (_) {
-          _dragStartGlobalY = null;
-          _dragStartPaddleY = null;
-        },
-        child: SafeArea(
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              return Stack(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            // ======= SCORE BAR (fiksna visina po sadržaju) =======
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
+              child: Stack(
                 children: [
-                  Container(
-                    decoration: const BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [Colors.black, Color(0xFF041B04)],
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                      ),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: IconButton(
+                      icon: const Icon(Icons.arrow_back, color: Colors.white70),
+                      onPressed: () => Navigator.pop(context),
                     ),
                   ),
-                  CustomPaint(
-                    painter: _CenterLinePainter(),
-                    size: Size(constraints.maxWidth, constraints.maxHeight),
-                  ),
-                  GameWidget(game: game!),
-                  Positioned(
-                    top: 8,
-                    left: 0,
-                    right: 0,
+                  Align(
+                    alignment: Alignment.center,
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.center,
+                      mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
                           '$playerScore',
@@ -215,72 +226,58 @@ class _GameScreenState extends State<GameScreen> {
                       ],
                     ),
                   ),
-                  // Speed-up floating banner
-                  Positioned(
-                    top: 52,
-                    left: 0,
-                    right: 0,
-                    child: IgnorePointer(
-                      child: AnimatedOpacity(
-                        opacity: _speedBannerVisible ? 1.0 : 0.0,
-                        duration: const Duration(milliseconds: 220),
-                        curve: Curves.easeOut,
-                        child: Center(
-                          child: AnimatedScale(
-                            scale: _speedBannerVisible ? 1.0 : 0.98,
-                            duration: const Duration(milliseconds: 220),
-                            curve: Curves.easeOut,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                              decoration: BoxDecoration(
-                                color: Colors.black54,
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(color: Colors.white24, width: 1),
-                              ),
-                              child: Text(
-                                _speedBannerText ?? '',
-                                style: const TextStyle(color: Colors.white, fontSize: 14),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                  Positioned(
-                    top: 8,
-                    left: 8,
-                    child: IconButton(
-                      icon: const Icon(Icons.arrow_back, color: Colors.white70),
-                      onPressed: () => Navigator.pop(context),
-                    ),
-                  ),
                 ],
-              );
-            },
-          ),
+              ),
+            ),
+
+            // Speed banner odmah ispod skora
+            AnimatedOpacity(
+              opacity: _speedBannerVisible ? 1.0 : 0.0,
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOut,
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.white24, width: 1),
+                    ),
+                    child: Text(
+                      _speedBannerText ?? '',
+                      style: const TextStyle(color: Colors.white, fontSize: 14),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+            // ======= ARENA (uzima sav preostali prostor) =======
+            Expanded(
+              child: GestureDetector(
+                onVerticalDragStart: _onDragStart,
+                onVerticalDragUpdate: _onDragUpdate,
+                onVerticalDragEnd: _onDragEnd,
+                child: Container(
+                  key: _arenaKey, // referenca za tačne dimenzije arene (hScreen)
+                  clipBehavior: Clip.hardEdge,
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [Colors.black, Color(0xFF041B04)],
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                    ),
+                  ),
+                  child: GameWidget(key: _gameKey, game: game!),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
 }
-
-class _CenterLinePainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.white24
-      ..strokeWidth = 4;
-    const segment = 18.0;
-    const gap = 14.0;
-    double y = 0;
-    final x = size.width / 2;
-    while (y < size.height) {
-      canvas.drawLine(Offset(x, y), Offset(x, (y + segment).clamp(0, size.height)), paint);
-      y += segment + gap;
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
+ 
